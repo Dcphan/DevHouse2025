@@ -81,7 +81,7 @@ export default function App() {
         const emb = Array.isArray(msg.embedding) ? msg.embedding : [];
         setEmbeddingInfo({
           dim: msg.embedding_dim ?? emb.length,
-          preview: emb.slice(0, 8),
+          preview: emb.slice(0, 512),
         });
       } catch (e) {
         setEmbeddingInfo({ err: 'Failed to parse WS message' });
