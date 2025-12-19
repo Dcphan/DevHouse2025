@@ -1,5 +1,5 @@
 from fastapi import FastAPI, WebSocket
-import base64, cv2, uuid
+import base64, cv2, uuid, os, json
 import numpy as np
 from deepface import DeepFace
 from collections import deque
@@ -8,6 +8,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import asyncpg
 from facedb import FaceEmbeddingDB
+from voice import AudioStreamProcessor, load_whisper_model
 
 app = FastAPI()
 
@@ -28,6 +29,7 @@ KNOWN_EMBEDDINGS: Dict[str, np.ndarray] = {}
 CONTACT_NAMES: Dict[str, str] = {}
 SESSION_ACTIVE: Dict[str, str] = {}  # track_id -> session_id
 SESSION_CREATED: set[str] = set()
+WHISPER_MODEL = None
 
 db = FaceEmbeddingDB()
 
@@ -62,7 +64,7 @@ def default_contact_name(person_id: str) -> str:
 
 @app.on_event("startup")
 async def startup():
-    global KNOWN_EMBEDDINGS, CONTACT_NAMES
+    global KNOWN_EMBEDDINGS, CONTACT_NAMES, WHISPER_MODEL
 
     # ✅ create db_pool (NO URL parsing)
     app.state.db_pool = await asyncpg.create_pool(
@@ -83,6 +85,16 @@ async def startup():
     CONTACT_NAMES = {k: names.get(k) or default_contact_name(k) for k in embeddings.keys()}
 
     print(f"Loaded {len(KNOWN_EMBEDDINGS)} embeddings from DB")
+
+    try:
+        model_size = os.getenv("WHISPER_MODEL", "tiny")
+        WHISPER_MODEL = load_whisper_model(model_size)
+        if WHISPER_MODEL:
+            print(f"Loaded Faster-Whisper model: {model_size}")
+        else:
+            print("Whisper model not loaded (library missing or init failed).")
+    except Exception as e:
+        print(f"Whisper model load error: {e}")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -196,7 +208,6 @@ async def ws_embedding(ws: WebSocket):
 
             # 3) client can disconnect between compute and send
             try:
-                print(CONTACT_NAMES)
                 await ws.send_json({
                     "track_id": track_id,
                     "best_match": best_id,
@@ -221,3 +232,41 @@ async def ws_embedding(ws: WebSocket):
                 await ws.send_json({"track_id": track_id, "error": str(e)})
             except WebSocketDisconnect:
                 break
+
+
+@app.websocket("/ws/audio")
+async def ws_audio(ws: WebSocket):
+    await ws.accept()
+    processor = AudioStreamProcessor(lambda: WHISPER_MODEL)
+    session_id = None
+
+    try:
+        while True:
+            message = await ws.receive()
+
+            if "text" in message and message["text"] is not None:
+                try:
+                    data = json.loads(message["text"])
+                    session_id = data.get("session_id", session_id)
+                    await ws.send_json({"type": "ACK", "session_id": session_id})
+                except Exception as e:
+                    await ws.send_json(
+                        {
+                            "type": "ERROR",
+                            "session_id": session_id,
+                            "error": f"Invalid control message: {e}",
+                        }
+                    )
+                continue
+
+            if "bytes" in message and message["bytes"] is not None:
+                events = processor.process_chunk(message["bytes"], session_id)
+                for ev in events:
+                    await ws.send_json(ev)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await ws.send_json({"type": "ERROR", "session_id": session_id, "error": str(e)})
+        except WebSocketDisconnect:
+            pass

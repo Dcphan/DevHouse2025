@@ -18,6 +18,7 @@ type Quality = {
 export default function App() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
 
   // refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -27,6 +28,12 @@ export default function App() {
 
   const streamRef = useRef<MediaStream | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const audioWSRef = useRef<WebSocket | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const audioStreamRef = useRef<MediaStream | null>(null);
+  const audioSamplesRef = useRef<number[]>([]);
 
   // MediaPipe + loop refs
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
@@ -53,6 +60,9 @@ export default function App() {
     newPersonName?: string | null;
     err?: string;
   } | null>(null);
+  const [transcripts, setTranscripts] = useState<string[]>([]);
+  const [speechState, setSpeechState] = useState<'idle' | 'speech' | 'silence'>('idle');
+  const [silenceMs, setSilenceMs] = useState(0);
 
   const [quality, setQuality] = useState<Quality>({
     hasFace: false,
@@ -119,6 +129,48 @@ export default function App() {
 
   };
 
+  const connectAudioWS = () => {
+    const existing = audioWSRef.current;
+    if (
+      existing &&
+      (existing.readyState === WebSocket.OPEN ||
+        existing.readyState === WebSocket.CONNECTING)
+    ) {
+      return existing;
+    }
+
+    const ws = new WebSocket('ws://localhost:8000/ws/audio');
+    audioWSRef.current = ws;
+
+    ws.onopen = () => {
+      const sid = sessionIdRef.current ?? 'no-session';
+      ws.send(JSON.stringify({ session_id: sid }));
+    };
+    ws.onclose = () => console.log('Audio WS closed');
+    ws.onerror = () => setAudioError('Audio WebSocket error');
+    ws.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'TRANSCRIPT_FINAL' && msg.text) {
+          setTranscripts((prev) => [msg.text, ...prev].slice(0, 6));
+        } else if (msg.type === 'SIGNAL') {
+          if (msg.signal === 'speech_started') setSpeechState('speech');
+          if (msg.signal === 'speech_ended') setSpeechState('silence');
+          if (msg.signal === 'silence_ms' && typeof msg.value === 'number') {
+            setSilenceMs(msg.value);
+          }
+        } else if (msg.type === 'ERROR') {
+          setAudioError(msg.error ?? 'Audio pipeline error');
+        }
+      } catch (e) {
+        console.error(e);
+        setAudioError('Failed to parse audio WS message');
+      }
+    };
+
+    return ws;
+  };
+
   const disconnectWS = () => {
     if (wsRef.current) {
       wsRef.current.close();
@@ -135,6 +187,82 @@ export default function App() {
     typeof crypto !== 'undefined' && crypto.randomUUID
       ? crypto.randomUUID()
       : `session_${Math.random().toString(36).slice(2, 10)}`;
+
+  const stopAudioCapture = () => {
+    if (audioProcessorRef.current && audioSourceRef.current) {
+      audioSourceRef.current.disconnect();
+      audioProcessorRef.current.disconnect();
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close();
+      audioCtxRef.current = null;
+    }
+    if (audioStreamRef.current) {
+      audioStreamRef.current.getTracks().forEach((t) => t.stop());
+      audioStreamRef.current = null;
+    }
+    if (audioWSRef.current) {
+      audioWSRef.current.close();
+      audioWSRef.current = null;
+    }
+    audioSamplesRef.current = [];
+    setSpeechState('idle');
+    setSilenceMs(0);
+  };
+
+  const startAudioCapture = async () => {
+    try {
+      setAudioError(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          sampleSize: 16,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      audioStreamRef.current = stream;
+
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      audioCtxRef.current = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      audioSourceRef.current = source;
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      audioProcessorRef.current = processor;
+
+      const samplesNeeded = Math.floor(ctx.sampleRate * 0.2); // 200ms
+
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const buf = audioSamplesRef.current;
+        for (let i = 0; i < input.length; i++) {
+          buf.push(input[i]);
+        }
+
+        while (buf.length >= samplesNeeded) {
+          const slice = buf.splice(0, samplesNeeded);
+          const pcm = new Int16Array(slice.length);
+          for (let i = 0; i < slice.length; i++) {
+            const s = Math.max(-1, Math.min(1, slice[i]));
+            pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+          }
+          const ws = connectAudioWS();
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(pcm.buffer);
+          }
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(ctx.destination);
+      connectAudioWS();
+    } catch (e: any) {
+      console.error(e);
+      setAudioError(e?.message ?? 'Could not start microphone.');
+    }
+  };
 
   // ---------- MediaPipe init ----------
   const initFaceLandmarker = async () => {
@@ -171,6 +299,7 @@ export default function App() {
 
     // ✅ CLOSE WEBSOCKET HERE
     disconnectWS();
+    stopAudioCapture();
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -182,6 +311,7 @@ export default function App() {
     setIsCameraOn(false);
     setEmbeddingInfo(null);
     setIdentityInfo(null);
+    setTranscripts([]);
     setQuality({
       hasFace: false,
       faceCount: 0,
@@ -533,6 +663,8 @@ export default function App() {
 
           // ✅ connect WS when camera starts
           connectWS();
+          connectAudioWS();
+          startAudioCapture();
 
           await initFaceLandmarker();
           startLoop();
@@ -717,6 +849,35 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="mt-4 bg-slate-900/40 border border-slate-700 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-white font-semibold">Voice Recognition</h3>
+                <span className="text-xs text-slate-400">
+                  Session: {sessionIdRef.current?.slice(0, 8) ?? 'n/a'}
+                </span>
+              </div>
+              <div className="text-slate-300 text-sm">
+                Status:{' '}
+                {speechState === 'speech'
+                  ? 'Speaking'
+                  : speechState === 'silence'
+                    ? 'Silent'
+                    : 'Idle'}
+              </div>
+              <div className="text-slate-400 text-xs mb-2">Silence: {silenceMs} ms</div>
+              {audioError && <div className="text-red-300 text-xs mb-2">{audioError}</div>}
+              <div className="space-y-1 max-h-32 overflow-auto text-slate-200 text-sm">
+                {transcripts.length === 0 && (
+                  <div className="text-slate-500">No transcripts yet</div>
+                )}
+                {transcripts.map((t, i) => (
+                  <div key={`${t}-${i}`} className="bg-slate-800/60 rounded px-2 py-1">
+                    {t}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
