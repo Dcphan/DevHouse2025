@@ -26,6 +26,7 @@ export default function App() {
   const scratchRef = useRef<HTMLCanvasElement>(null); // offscreen for metrics
 
   const streamRef = useRef<MediaStream | null>(null);
+  const sessionIdRef = useRef<string | null>(null);
 
   // MediaPipe + loop refs
   const landmarkerRef = useRef<FaceLandmarker | null>(null);
@@ -38,6 +39,18 @@ export default function App() {
   const [embeddingInfo, setEmbeddingInfo] = useState<{
     dim?: number;
     preview?: number[];
+    err?: string;
+  } | null>(null);
+  const [identityInfo, setIdentityInfo] = useState<{
+    identity?: string | null;
+    identityName?: string | null;
+    bestMatch?: string | null;
+    bestMatchName?: string | null;
+    score?: number;
+    smoothScore?: number;
+    enrolled?: boolean;
+    newPersonId?: string | null;
+    newPersonName?: string | null;
     err?: string;
   } | null>(null);
 
@@ -75,18 +88,35 @@ export default function App() {
 
         if (msg.error) {
           setEmbeddingInfo({ err: msg.error });
+          setIdentityInfo({ err: msg.error });
           return;
         }
 
-        const emb = Array.isArray(msg.embedding) ? msg.embedding : [];
+        // Show recognition results instead of embedding array
         setEmbeddingInfo({
-          dim: msg.embedding_dim ?? emb.length,
-          preview: emb.slice(0, 512),
+          dim: msg.identity ? 512 : undefined, // optional
+          preview: undefined,
+          // you can store other stuff too if you want
         });
-      } catch (e) {
+
+        setIdentityInfo({
+          identity: msg.identity ?? null,
+          identityName: msg.identity_name ?? null,
+          bestMatch: msg.best_match ?? null,
+          bestMatchName: msg.best_match_name ?? null,
+          score: typeof msg.score === 'number' ? msg.score : undefined,
+          smoothScore:
+            typeof msg.smooth_score === 'number' ? msg.smooth_score : undefined,
+          enrolled: Boolean(msg.enrolled),
+          newPersonId: msg.new_person_id ?? null,
+          newPersonName: msg.new_person_name ?? null,
+        });
+      } catch {
         setEmbeddingInfo({ err: 'Failed to parse WS message' });
+        setIdentityInfo({ err: 'Failed to parse WS message' });
       }
     };
+
   };
 
   const disconnectWS = () => {
@@ -100,6 +130,11 @@ export default function App() {
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     return dataUrl.split(',')[1] ?? '';
   };
+
+  const newSessionId = () =>
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `session_${Math.random().toString(36).slice(2, 10)}`;
 
   // ---------- MediaPipe init ----------
   const initFaceLandmarker = async () => {
@@ -142,9 +177,11 @@ export default function App() {
       streamRef.current = null;
     }
     if (videoRef.current) videoRef.current.srcObject = null;
+    sessionIdRef.current = null;
 
     setIsCameraOn(false);
     setEmbeddingInfo(null);
+    setIdentityInfo(null);
     setQuality({
       hasFace: false,
       faceCount: 0,
@@ -434,6 +471,7 @@ export default function App() {
               ws.send(
                 JSON.stringify({
                   track_id: 'face-1',
+                  session_id: sessionIdRef.current,
                   image_b64: b64,
                 })
               );
@@ -486,6 +524,7 @@ export default function App() {
 
       video.srcObject = stream;
       streamRef.current = stream;
+      sessionIdRef.current = newSessionId();
 
       video.onloadedmetadata = async () => {
         try {
@@ -517,6 +556,13 @@ export default function App() {
   }, []);
 
   const pass = quality.score >= 80 && quality.faceCount === 1;
+  const displayedIdentity =
+    identityInfo?.identityName ??
+    (identityInfo?.identity && identityInfo.identity !== 'UNKNOWN'
+      ? identityInfo.identity
+      : 'Unknown');
+  const confidence =
+    identityInfo?.smoothScore ?? identityInfo?.score ?? undefined;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
@@ -609,6 +655,42 @@ export default function App() {
 
             <div className="text-slate-400 text-sm mb-4">
               {quality.reasons.join(' • ')}
+            </div>
+
+            <div className="mb-4">
+              <h3 className="text-white font-semibold mb-2">Who you are talking to</h3>
+              {!identityInfo && (
+                <div className="text-slate-400 text-sm">
+                  Waiting for a stable face to identify...
+                </div>
+              )}
+              {identityInfo?.err && (
+                <div className="text-red-300 text-sm">{identityInfo.err}</div>
+              )}
+              {identityInfo && !identityInfo.err && (
+                <div className="space-y-1">
+                  <div className="text-slate-200 text-lg font-semibold">
+                    {displayedIdentity}
+                  </div>
+                  <div className="text-slate-400 text-sm">
+                    {confidence !== undefined
+                      ? `Confidence: ${confidence.toFixed(3)}`
+                      : 'No confidence score yet'}
+                  </div>
+                  {identityInfo.bestMatch && (
+                    <div className="text-slate-500 text-xs">
+                      Best match:{' '}
+                      {identityInfo.bestMatchName ?? identityInfo.bestMatch}
+                    </div>
+                  )}
+                  {identityInfo.enrolled && identityInfo.newPersonId && (
+                    <div className="text-emerald-300 text-xs">
+                      Enrolled new profile as{' '}
+                      {identityInfo.newPersonName ?? identityInfo.newPersonId}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="mb-4">
