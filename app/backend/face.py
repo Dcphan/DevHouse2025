@@ -1,5 +1,17 @@
+import os
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # load .env if present (project root)
+except Exception:
+    pass
+
+# Allow Intel OpenMP to load once (TensorFlow + Faster-Whisper both ship libiomp5md)
+# See: OMP Error #15. Safe to remove if environment is cleaned up later.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 from fastapi import FastAPI, WebSocket
-import base64, cv2, uuid, os, json
+import base64, cv2, uuid, json
 import numpy as np
 from deepface import DeepFace
 from collections import deque
@@ -87,7 +99,7 @@ async def startup():
     print(f"Loaded {len(KNOWN_EMBEDDINGS)} embeddings from DB")
 
     try:
-        model_size = os.getenv("WHISPER_MODEL", "tiny")
+        model_size = os.getenv("WHISPER_MODEL", "base")
         WHISPER_MODEL = load_whisper_model(model_size)
         if WHISPER_MODEL:
             print(f"Loaded Faster-Whisper model: {model_size}")

@@ -15,6 +15,17 @@ type Quality = {
   reasons: string[];
 };
 
+type TranscriptEntry = {
+  text: string;
+  speakerLabel?: string;
+  speakerSegments?: Array<{
+    speaker?: string;
+    text?: string;
+    start?: number;
+    end?: number;
+  }>;
+};
+
 export default function App() {
   const [isCameraOn, setIsCameraOn] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,9 +71,10 @@ export default function App() {
     newPersonName?: string | null;
     err?: string;
   } | null>(null);
-  const [transcripts, setTranscripts] = useState<string[]>([]);
+  const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
   const [speechState, setSpeechState] = useState<'idle' | 'speech' | 'silence'>('idle');
   const [silenceMs, setSilenceMs] = useState(0);
+  const [lastSpeaker, setLastSpeaker] = useState<string>('Unknown');
 
   const [quality, setQuality] = useState<Quality>({
     hasFace: false,
@@ -152,7 +164,26 @@ export default function App() {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'TRANSCRIPT_FINAL' && msg.text) {
-          setTranscripts((prev) => [msg.text, ...prev].slice(0, 6));
+          const rawLabel = msg.speaker_label || 'unknown';
+          // Normalize labels from backend: YOU/OTHER/UNCERTAIN or arbitrary strings
+          let label = String(rawLabel || 'Unknown');
+          if (label.toLowerCase() === 'you') label = 'You';
+          else if (label.toLowerCase() === 'other') label = 'Other person';
+          else if (label.toLowerCase() === 'uncertain') label = 'Uncertain';
+          else if (label.startsWith('spk')) {
+            label = `Speaker ${label.replace(/[^0-9]+/g, '') || label.split('-').pop() || label}`;
+          }
+
+          const segments = Array.isArray(msg.speaker_segments) ? msg.speaker_segments : undefined;
+          setLastSpeaker(label || 'Unknown');
+          setTranscripts((prev) => [
+            {
+              text: msg.text,
+              speakerLabel: label || 'Unknown',
+              speakerSegments: segments,
+            },
+            ...prev,
+          ].slice(0, 6));
         } else if (msg.type === 'SIGNAL') {
           if (msg.signal === 'speech_started') setSpeechState('speech');
           if (msg.signal === 'speech_ended') setSpeechState('silence');
@@ -695,6 +726,7 @@ export default function App() {
       : 'Unknown');
   const confidence =
     identityInfo?.smoothScore ?? identityInfo?.score ?? undefined;
+  const audioSpeakerLabel = lastSpeaker || 'Unknown speaker';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex items-center justify-center p-4">
@@ -858,6 +890,10 @@ export default function App() {
                   Session: {sessionIdRef.current?.slice(0, 8) ?? 'n/a'}
                 </span>
               </div>
+              <div className="text-slate-300 text-sm mb-1">
+                Current speaker (audio):{' '}
+                <span className="font-semibold">{audioSpeakerLabel}</span>
+              </div>
               <div className="text-slate-300 text-sm">
                 Status:{' '}
                 {speechState === 'speech'
@@ -873,8 +909,16 @@ export default function App() {
                   <div className="text-slate-500">No transcripts yet</div>
                 )}
                 {transcripts.map((t, i) => (
-                  <div key={`${t}-${i}`} className="bg-slate-800/60 rounded px-2 py-1">
-                    {t}
+                  <div
+                    key={`${t.text}-${i}`}
+                    className="bg-slate-800/60 rounded px-2 py-1 flex justify-between items-start gap-2"
+                  >
+                    <div>
+                      <span className="text-slate-400 mr-1">
+                        {(t.speakerLabel || 'Unknown') + ':'}
+                      </span>
+                      <span className="text-slate-200">{t.text}</span>
+                    </div>
                   </div>
                 ))}
               </div>
