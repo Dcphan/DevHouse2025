@@ -99,7 +99,7 @@ async def startup():
     print(f"Loaded {len(KNOWN_EMBEDDINGS)} embeddings from DB")
 
     try:
-        model_size = os.getenv("WHISPER_MODEL", "base")
+        model_size = os.getenv("WHISPER_MODEL", "small")
         WHISPER_MODEL = load_whisper_model(model_size)
         if WHISPER_MODEL:
             print(f"Loaded Faster-Whisper model: {model_size}")

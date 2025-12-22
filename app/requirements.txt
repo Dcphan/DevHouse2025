@@ -18,6 +18,9 @@ mtcnn>=0.1.1
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 
+# HTTP + API clients
+httpx>=0.27.0
+openai>=1.35.0
 
 #database
 asyncpg>=0.27.0

@@ -24,8 +24,10 @@ def test_new_session_summary_is_empty(stm):
 def test_append_utterance_keeps_order_and_fields(stm):
     stm.append_utterance("s1", "other", "hi", ts=10.0)
     stm.append_utterance("s1", "user", "hello", ts=10.5)
+    
 
     s = stm.summary("s1")
+    print(s)
     assert len(s["utterances"]) == 2
     assert s["utterances"][0]["speaker"] == "other"
     assert s["utterances"][0]["text"] == "hi"
@@ -54,4 +56,4 @@ def test_last_coach_action_is_set(stm):
 
     s = stm.summary("s1")
     assert s["last_coach_action"]["type"] == "prompt"
-    assert s["last_coach_action"]["payload"]["text"]()
+    assert s["last_coach_action"]["payload"]["text"] == "Ask a follow-up"
