@@ -1,3 +1,4 @@
 myenv/
 app/backend/voice_profiles.json
-apps\ar-ui\.next
+apps/ar-ui/.next
+apps/ar-ui/.node_modules
