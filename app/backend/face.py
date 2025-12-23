@@ -10,7 +10,9 @@ except Exception:
 # See: OMP Error #15. Safe to remove if environment is cleaned up later.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import base64, cv2, uuid, json
 import numpy as np
 from deepface import DeepFace
@@ -20,9 +22,18 @@ from starlette.websockets import WebSocketDisconnect
 
 import asyncpg
 from facedb import FaceEmbeddingDB
-from voice import AudioStreamProcessor, load_whisper_model
+from pydantic import BaseModel
+from voice import AudioStreamProcessor, embed_audio, load_whisper_model
+from voice_profiles import get_profile, load_full_profile, save_profile
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- put credentials here (or env vars later) ---
 PG_USER = "postgres"
@@ -35,6 +46,27 @@ SCORE_WINDOW = 8
 STABLE_FRAMES = 3
 ENROLL_FRAMES = 12
 MATCH_THRESHOLD = 0.45
+
+
+class VoiceRegistrationRequest(BaseModel):
+    name: str
+    audio_base64: str
+    sample_rate: int = 16000
+
+
+class VoiceCompareRequest(BaseModel):
+    audio_base64: str
+    sample_rate: int = 16000
+
+
+def _decode_audio_buffer(audio_base64: str) -> np.ndarray:
+    try:
+        audio_bytes = base64.b64decode(audio_base64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="audio_base64 is not valid base64")
+    if len(audio_bytes) % 2 != 0:
+        raise HTTPException(status_code=400, detail="audio payload must be 16-bit PCM")
+    return np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
 tracks: Dict[str, dict] = {}
 KNOWN_EMBEDDINGS: Dict[str, np.ndarray] = {}
@@ -114,6 +146,53 @@ async def shutdown():
     pool = getattr(app.state, "db_pool", None)
     if pool:
         await pool.close()
+
+
+@app.post("/voice/register")
+async def register_voice(req: VoiceRegistrationRequest):
+    if not req.audio_base64:
+        raise HTTPException(status_code=400, detail="audio_base64 is required")
+    audio = _decode_audio_buffer(req.audio_base64)
+    embedding = embed_audio(audio)
+    if embedding is None:
+        raise HTTPException(status_code=503, detail="Speaker encoder unavailable")
+    profile = save_profile(req.name, embedding)
+    return {"status": "ok", "profile": profile}
+
+
+@app.post("/voice/compare")
+async def compare_voice(req: VoiceCompareRequest):
+    if not req.audio_base64:
+        raise HTTPException(status_code=400, detail="audio_base64 is required")
+    audio = _decode_audio_buffer(req.audio_base64)
+    embedding = embed_audio(audio)
+    if embedding is None:
+        raise HTTPException(status_code=503, detail="Speaker encoder unavailable")
+    profile = load_full_profile()
+    if not profile or "embedding" not in profile:
+        raise HTTPException(status_code=404, detail="No saved voice profile")
+    stored_embedding = np.array(profile["embedding"], dtype=np.float32)
+    if stored_embedding.size == 0:
+        raise HTTPException(status_code=500, detail="Stored voice profile is invalid")
+    stored_norm = np.linalg.norm(stored_embedding)
+    if stored_norm == 0:
+        raise HTTPException(status_code=500, detail="Stored voice profile is invalid")
+    stored_embedding = stored_embedding / (stored_norm + 1e-9)
+    sim = float(np.dot(stored_embedding, embedding) / (np.linalg.norm(embedding) + 1e-9))
+    return {
+        "similarity": sim,
+        "profile": {"name": profile.get("name"), "created_at": profile.get("created_at")},
+    }
+
+
+@app.get("/voice/profiles")
+async def get_voice_profiles():
+    return {"profile": get_profile()}
+
+
+@app.options("/voice/register")
+async def register_voice_options():
+    return JSONResponse({"detail": "OK"})
 
 @app.websocket("/ws/embedding")
 async def ws_embedding(ws: WebSocket):

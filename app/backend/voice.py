@@ -21,6 +21,50 @@ except Exception:
     WhisperModel = None  # type: ignore
 
 
+_speaker_model_cache: Optional[VoiceEncoder] = None
+_speaker_model_error: Optional[str] = None
+
+
+def _load_speaker_model() -> Optional[VoiceEncoder]:
+    global _speaker_model_cache, _speaker_model_error
+    if _speaker_model_cache:
+        return _speaker_model_cache
+    if VoiceEncoder is None:
+        _speaker_model_error = "Resemblyzer not available"
+        print("[AUDIO] Resemblyzer import failed; install resemblyzer", flush=True)
+        return None
+    try:
+        _speaker_model_cache = VoiceEncoder()
+        return _speaker_model_cache
+    except Exception as e:
+        _speaker_model_error = f"Speaker model load failed: {e}"
+        print(f"[AUDIO] speaker model load failed: {e}", flush=True)
+        return None
+
+
+def embed_audio(audio: np.ndarray) -> Optional[np.ndarray]:
+    """Create a normalized Resemblyzer embedding for the provided audio buffer."""
+    global _speaker_model_error
+    model = _load_speaker_model()
+    if model is None:
+        if _speaker_model_error:
+            print(f"[AUDIO] speaker model unavailable: {_speaker_model_error}", flush=True)
+        return None
+
+    try:
+        vec = model.embed_utterance(audio.astype(np.float32))
+        return vec / (np.linalg.norm(vec) + 1e-9)
+    except Exception as e:
+        _speaker_model_error = f"Speaker embed failed: {e}"
+        print(f"[AUDIO] speaker embed failed: {e}", flush=True)
+        return None
+
+
+def preload_speaker_model() -> Optional[VoiceEncoder]:
+    """Load the Resemblyzer encoder ahead of time (e.g., during startup)."""
+    return _load_speaker_model()
+
+
 class AudioStreamProcessor:
     """
     Streaming VAD + endpointing.
@@ -71,33 +115,20 @@ class AudioStreamProcessor:
     def _ensure_speaker_model(self) -> Optional[VoiceEncoder]:
         if self.spk_model:
             return self.spk_model
-        if VoiceEncoder is None:
-            self._model_error = "Resemblyzer not available"
-            print("[AUDIO] Resemblyzer import failed; install resemblyzer", flush=True)
+        model = _load_speaker_model()
+        if model is None:
+            self._model_error = _speaker_model_error or "Resemblyzer not available"
             return None
-        try:
-            self.spk_model = VoiceEncoder()
-            return self.spk_model
-        except Exception as e:
-            self._model_error = f"Speaker model load failed: {e}"
-            print(f"[AUDIO] speaker model load failed: {e}", flush=True)
-            return None
+        self.spk_model = model
+        return self.spk_model
 
     def _speaker_embed(self, audio: np.ndarray) -> Optional[np.ndarray]:
-        model = self._ensure_speaker_model()
-        if model is None:
+        emb = embed_audio(audio)
+        if emb is None:
             if self._model_error:
                 print(f"[AUDIO] speaker model unavailable: {self._model_error}", flush=True)
             return None
-        try:
-            # Resemblyzer expects float32, -1..1, 16k
-            vec = model.embed_utterance(audio.astype(np.float32))
-            vec = vec / (np.linalg.norm(vec) + 1e-9)
-            return vec
-        except Exception as e:
-            self._model_error = f"Speaker embed failed: {e}"
-            print(f"[AUDIO] speaker embed failed: {e}", flush=True)
-            return None
+        return emb
 
     def _label_speaker(self, audio: np.ndarray) -> tuple[str, float]:
         emb = self._speaker_embed(audio)

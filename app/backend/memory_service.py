@@ -24,6 +24,10 @@ class MemoryService:
         self.client = supermemory_client or SupermemoryClient()
         self._openai_client = openai_client
 
+    def _person_label(self, person_id: str, person_name: Optional[str]) -> str:
+        label = (person_name or person_id or "").strip()
+        return label or person_id
+
     def _container_tag(self, person_id: str) -> str:
         return f"user_{person_id}"
 
@@ -35,13 +39,24 @@ class MemoryService:
                     return metadata[key]
         return None
 
-    def write_memory(self, person_id: str, key: str, value: object, confidence: float, *, source: str = "conversation") -> Dict[str, Any]:
+    def write_memory(
+        self,
+        person_id: str,
+        key: str,
+        value: object,
+        confidence: float,
+        *,
+        source: str = "conversation",
+        person_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         container_tag = self._container_tag(person_id)
-        content_block = f"key: {key}\nvalue: {value}\n"
+        person_label = self._person_label(person_id, person_name)
+        content_block = f"{person_label}: key: {key}\nvalue: {value}\n"
         metadata = {
             "key": key,
             "source": source,
             "kind": "atomic_memory",
+            "person_name": person_label,
         }
         return self.client.add_document(content=content_block, container_tag=container_tag, metadata=metadata)
 
@@ -153,12 +168,23 @@ class MemoryService:
                     )
         return facts
 
-    def save_meeting_summary(self, person_id: str, stm_dialogue: object) -> Dict[str, Any]:
+    def save_meeting_summary(
+        self,
+        person_id: str,
+        stm_dialogue: object,
+        *,
+        person_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
         container_tag = self._container_tag(person_id)
         normalized_dialogue = self._normalize_dialogue(stm_dialogue)
         summary = self._summarize_dialogue(person_id, normalized_dialogue)
-        formatted_content = f"Your last conversation with {person_id} is about {summary}"
-        metadata = {"kind": "last_conversation_title", "source": "meeting_summary"}
+        person_label = self._person_label(person_id, person_name)
+        formatted_content = f"Your last conversation with {person_label} is about {summary}"
+        metadata = {
+            "kind": "last_conversation_title",
+            "source": "meeting_summary",
+            "person_name": person_label,
+        }
         search_resp = self.client.search_memories(
             q="last conversation title",
             container_tag=container_tag,
@@ -182,7 +208,14 @@ class MemoryService:
             )
         return self.client.add_document(content=formatted_content, container_tag=container_tag, metadata=metadata)
 
-    def save_person_facts(self, person_id: str, stm_dialogue: object, *, default_confidence: float = 0.8) -> List[Dict[str, Any]]:
+    def save_person_facts(
+        self,
+        person_id: str,
+        stm_dialogue: object,
+        *,
+        default_confidence: float = 0.8,
+        person_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Extract person facts (school, interests, etc.) from dialogue and store them in Supermemory.
         """
@@ -190,17 +223,19 @@ class MemoryService:
         normalized_dialogue = self._normalize_dialogue(stm_dialogue)
         facts = self._extract_person_facts(normalized_dialogue)
         responses: List[Dict[str, Any]] = []
+        person_label = self._person_label(person_id, person_name)
         for fact in facts:
             key = fact.get("key")
             value = fact.get("value")
             if not key or not value:
                 continue
-            content = f"{key}: {value}"
+            content = f"{person_label}: {key}: {value}"
             metadata = {
                 "key": key,
                 "kind": "person_fact",
                 "tag": key,
                 "source": "conversation_end",
+                "person_name": person_label,
             }
             responses.append(
                 self.client.add_document(
@@ -210,6 +245,44 @@ class MemoryService:
                 )
             )
         return responses
+
+
+    def store_person_fact(
+        self,
+        person_id: str,
+        key: str,
+        value: str,
+        *,
+        confidence: float = 0.8,
+        evidence: str = "",
+        fact_type: str = "other",
+        tags: Optional[List[str]] = None,
+        source: str = "conversation_end",
+        person_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Store a single fact about a person in Supermemory.
+        """
+        container_tag = self._container_tag(person_id)
+        person_label = self._person_label(person_id, person_name)
+        content = f"{person_label}: {key}: {value}"
+        metadata = {
+            "key": key,
+            "kind": "person_fact",
+            "tag": fact_type,
+            "type": fact_type,
+            "confidence": confidence,
+            "evidence": evidence,
+            "source": source,
+            "person_name": person_label,
+        }
+        if tags:
+            metadata["tags"] = ",".join(tags[:6])
+        return self.client.add_document(
+            content=content,
+            container_tag=container_tag,
+            metadata=metadata,
+        )
 
 
 if __name__ == "__main__":
