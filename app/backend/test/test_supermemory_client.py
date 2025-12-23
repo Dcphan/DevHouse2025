@@ -136,7 +136,8 @@ def test_save_meeting_summary_updates_existing(monkeypatch):
     update = dummy.update_calls[0]
     assert update["container_tag"] == "user_p3"
     assert update["memory_id"] == "m1"
-    assert update["new_content"] == "Meeting recap title"
+    assert update["new_content"] == "Your last conversation with p3 is about Meeting recap title"
+    assert update["metadata"]["person_name"] == "p3"
 
 
 def test_save_meeting_summary_adds_when_missing(monkeypatch):
@@ -148,4 +149,5 @@ def test_save_meeting_summary_adds_when_missing(monkeypatch):
     assert dummy.add_calls
     added = dummy.add_calls[0]
     assert added["container_tag"] == "user_p4"
-    assert "Meeting recap title" in added["content"]
+    assert added["content"] == "Your last conversation with p4 is about Meeting recap title"
+    assert added["metadata"]["person_name"] == "p4"

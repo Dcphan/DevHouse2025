@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
-from .memory_service import MemoryService
-from .supermemory_client import SupermemoryError
+from memory_service import MemoryService
+from supermemory_client import SupermemoryError
 
 
 class AgentTools:
@@ -318,11 +318,15 @@ class AgentTools:
         }
 
 
-    def store_meeting_summary(self, person_id: str, stm_dialogue: object):
+    def store_meeting_summary(self, person_id: str, stm_dialogue: object, *, person_name: Optional[str] = None):
         """
         Persist a concise last-conversation title for the person.
         """
-        return self.memory_service.save_meeting_summary(person_id=person_id, stm_dialogue=stm_dialogue)
+        return self.memory_service.save_meeting_summary(
+            person_id=person_id,
+            stm_dialogue=stm_dialogue,
+            person_name=person_name,
+        )
 
     def web_browse_context(self):
         pass

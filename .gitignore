@@ -1,4 +1,23 @@
+# ======================
+# Python
+# ======================
 myenv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+app/backend/__pycache__/
+
+# ======================
+# Next.js / Node
+# ======================
+apps/ar-ui/.next/
+apps/ar-ui/node_modules/
+node_modules/
+
+# ======================
+# App data / secrets
+# ======================
 app/backend/voice_profiles.json
-apps/ar-ui/.next
-apps/ar-ui/.node_modules
+.env
+.env.*

@@ -80,7 +80,12 @@ class ConversationOrchestrator:
         if etype == "conversation_end":
             if state.active_person_id:
                 try:
-                    self.tools.store_meeting_summary(state.active_person_id, state.stm_dialogue)
+                    person_label = state.person_context.get("person_name") or state.recognized_name
+                    self.tools.store_meeting_summary(
+                        state.active_person_id,
+                        state.stm_dialogue,
+                        person_name=person_label,
+                    )
                     signals.append({"type": "meeting_summary_saved"})
                 except Exception as e:
                     signals.append({"type": "error", "where": "store_meeting_summary", "msg": str(e)[:180]})
@@ -207,6 +212,7 @@ class ConversationOrchestrator:
                 if name_res.get("confidence", 0.0) >= 0.7 and name_res.get("name"):
                     state.recognized_name = name_res["name"]
                     signals.append({"type": "recognized_name", "name": state.recognized_name})
+                    state.person_context["person_name"] = state.recognized_name
             except Exception as e:
                 signals.append({"type": "error", "where": "recognize_person_name", "msg": str(e)[:180]})
 
@@ -253,6 +259,7 @@ class ConversationOrchestrator:
                         evidence=evidence,
                         fact_type=ctype,
                         tags=decision.get("tags") or [],
+                        person_name=state.person_context.get("person_name") or state.recognized_name,
                     )
                     stored_items.append({"key": key, "value": value, "type": ctype, "ok": True, "result": saved})
                 except Exception as e:
@@ -260,6 +267,14 @@ class ConversationOrchestrator:
                     stored_items.append({"key": c.get("key"), "value": c.get("value"), "type": c.get("type"), "ok": False})
 
             mem_out = {"stored": any(x.get("ok") for x in stored_items), "items": stored_items}
+
+        print(
+            "[orchestrator memory]",
+            f"person_id={state.active_person_id}",
+            f"should_store={decision.get('should_store')}",
+            f"stored={mem_out['stored']}",
+            f"items={len(mem_out['items'])}",
+        )
 
         return coach_out, mem_out
 
